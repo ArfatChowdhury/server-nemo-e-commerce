@@ -3,21 +3,30 @@ const cors = require('cors');
 require('dotenv').config();
 
 const port = process.env.PORT || 5000;
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express();
 
 const uri = process.env.MONGODB_URI;
+
+if (!uri) {
+  console.error('❌ MONGODB_URI is not set. Please add it to your environment variables.');
+  console.error('For Vercel: Go to Settings → Environment Variables and add MONGODB_URI');
+}
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-const client = new MongoClient(uri, {
+const client = new MongoClient(uri || '', {
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
     deprecationErrors: true,
-  }
+  },
+  maxPoolSize: 10,
+  minPoolSize: 1,
+  serverSelectionTimeoutMS: 10000,
+  socketTimeoutMS: 30000,
 });
 
 async function run() {
@@ -229,3 +238,5 @@ process.on('SIGTERM', () => {
     console.log('Process terminated');
   });
 });
+
+module.exports = app;
