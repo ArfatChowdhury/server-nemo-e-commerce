@@ -1,8 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 require('dotenv').config();
 
 const port = process.env.PORT || 5000;
@@ -11,44 +8,9 @@ const app = express();
 
 const uri = process.env.MONGODB_URI;
 
-// Configure multer for file uploads
-const uploadDir = path.join(__dirname, 'uploads');
-
-// Create uploads directory if it doesn't exist
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    // Generate unique filename with timestamp
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-const upload = multer({
-  storage: storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
-  fileFilter: (req, file, cb) => {
-    // Allow only image files
-    const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    if (allowedMimes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed'));
-    }
-  }
-});
-
 // Middleware
 app.use(cors());
 app.use(express.json());
-// Serve uploaded images as static files
-app.use('/uploads', express.static(uploadDir));
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -63,65 +25,157 @@ async function run() {
     // Connect the client to the server
     await client.connect();
 
-    const usersCollection = client.db('nemo-ecommerce-db').collection('products');
+    const productsCollection = client.db('nemo-ecommerce-db').collection('products');
 
+    // Get all products
     app.get('/products', async (req, res) => {
       try {
-        const cursor = await usersCollection.find().toArray();
-        res.send(cursor);
+        const products = await productsCollection.find().toArray();
+        res.send({
+          success: true,
+          data: products,
+          count: products.length
+        });
       } catch (error) {
         console.error('Error fetching products:', error);
         res.status(500).send({ 
           success: false, 
           message: 'Error fetching products',
-          error: error.message 
+          error: process.env.NODE_ENV === 'production' ? 'Server error' : error.message 
         });
       }
     });
 
-    app.post('/products', upload.array('images', 10), async (req, res) => {
+    // Create new product (without image upload for now)
+    app.post('/products', async (req, res) => {
       try {
-        const productData = JSON.parse(req.body.productData);
+        const productData = req.body;
 
-        // Generate web-accessible URLs for uploaded images
-        const imageUrls = [];
-        if (req.files && req.files.length > 0) {
-          req.files.forEach(file => {
-            const imageUrl = `${req.protocol}://${req.get('host')}/uploads/${file.filename}`;
-            imageUrls.push(imageUrl);
+        const newProduct = {
+          ...productData,
+          createdAt: new Date(),
+          // If images are sent as local paths, convert to placeholder or empty
+          images: productData.images && productData.images.length > 0 
+            ? productData.images.map(img => 
+                img.startsWith('http') ? img : 'https://via.placeholder.com/150?text=No+Image'
+              )
+            : ['https://via.placeholder.com/150?text=No+Image']
+        };
+
+        console.log('Creating new product:', newProduct.productName);
+        const result = await productsCollection.insertOne(newProduct);
+        
+        res.send({
+          success: true,
+          message: 'Product created successfully',
+          data: {
+            id: result.insertedId,
+            ...newProduct
+          }
+        });
+      } catch (error) {
+        console.error('Error creating product:', error);
+        res.status(500).send({
+          success: false,
+          message: 'Error creating product',
+          error: process.env.NODE_ENV === 'production' ? 'Server error' : error.message
+        });
+      }
+    });
+
+    // Update product
+    app.put('/products/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const updateData = req.body;
+
+        const result = await productsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { ...updateData, updatedAt: new Date() } }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({
+            success: false,
+            message: 'Product not found'
           });
         }
 
-        // Add image URLs to product data
-        const newProduct = {
-          ...productData,
-          images: imageUrls,
-          createdAt: new Date()
-        };
-
-        console.log('New Product:', newProduct);
-        const result = await usersCollection.insertOne(newProduct);
         res.send({
           success: true,
-          message: 'Product uploaded successfully',
-          result: result,
-          product: newProduct
+          message: 'Product updated successfully'
         });
       } catch (error) {
-        console.error('Error uploading product:', error);
+        console.error('Error updating product:', error);
         res.status(500).send({
           success: false,
-          message: 'Error uploading product',
+          message: 'Error updating product',
+          error: process.env.NODE_ENV === 'production' ? 'Server error' : error.message
+        });
+      }
+    });
+
+    // Delete product
+    app.delete('/products/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        const result = await productsCollection.deleteOne(
+          { _id: new ObjectId(id) }
+        );
+
+        if (result.deletedCount === 0) {
+          return res.status(404).send({
+            success: false,
+            message: 'Product not found'
+          });
+        }
+
+        res.send({
+          success: true,
+          message: 'Product deleted successfully'
+        });
+      } catch (error) {
+        console.error('Error deleting product:', error);
+        res.status(500).send({
+          success: false,
+          message: 'Error deleting product',
+          error: process.env.NODE_ENV === 'production' ? 'Server error' : error.message
+        });
+      }
+    });
+
+    // Health check for products collection
+    app.get('/health', async (req, res) => {
+      try {
+        await client.db("admin").command({ ping: 1 });
+        const productCount = await productsCollection.countDocuments();
+        
+        res.send({
+          success: true,
+          message: 'Server is healthy',
+          database: 'Connected',
+          products: productCount,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        res.status(500).send({
+          success: false,
+          message: 'Server health check failed',
           error: error.message
         });
       }
     });
 
-    await client.db("admin").command({ ping: 1 });
     console.log("✅ MongoDB connected successfully!");
   } catch (error) {
     console.error("❌ MongoDB connection failed:", error);
-    process.exit(1);
+    // Don't exit process in production, just log error
+    if (process.env.NODE_ENV === 'production') {
+      console.log('Continuing without MongoDB connection...');
+    } else {
+      process.exit(1);
+    }
   }
 }
 
@@ -130,10 +184,12 @@ run().catch(console.dir);
 // Health check endpoint
 app.get('/', (req, res) => {
   res.send({
+    success: true,
     message: 'Nemo E-commerce Server is running',
     status: 'active',
     version: '1.0.0',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
@@ -146,13 +202,13 @@ app.use((req, res) => {
   });
 });
 
-// Error handler middleware
+// Global error handler
 app.use((err, req, res, next) => {
-  console.error('Error:', err);
+  console.error('Server Error:', err);
   res.status(500).send({
     success: false,
     message: 'Internal server error',
-    error: process.env.NODE_ENV === 'production' ? 'Server error' : err.message
+    error: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err.message
   });
 });
 
@@ -163,4 +219,13 @@ const server = app.listen(port, () => {
   console.log(`║  🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`║  ⏰ Started at: ${new Date().toISOString()}`);
   console.log(`╚════════════════════════════════════════════════════════════╝\n`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  server.close(() => {
+    client.close();
+    console.log('Process terminated');
+  });
 });
